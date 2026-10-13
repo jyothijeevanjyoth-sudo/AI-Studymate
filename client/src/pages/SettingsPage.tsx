@@ -39,6 +39,9 @@ export const SettingsPage: React.FC = () => {
   }, []);
 
   const handleSeedDemo = async () => {
+    if (!window.confirm('Reset and re-seed the sample CS101 demo course? This will restore clean demo materials, textbook chunks, diagnostic quizzes, and misconceptions.')) {
+      return;
+    }
     setSeeding(true);
     setSeedMsg(null);
     try {

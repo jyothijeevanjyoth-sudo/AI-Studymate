@@ -12,9 +12,14 @@ import {
   AlertCircle,
   Sparkles,
   ChevronDown,
+  Menu,
 } from 'lucide-react';
 
-export const Navbar: React.FC = () => {
+interface NavbarProps {
+  onToggleMobileMenu?: () => void;
+}
+
+export const Navbar: React.FC<NavbarProps> = ({ onToggleMobileMenu }) => {
   const { courses, selectedCourse, setSelectedCourse } = useCourse();
   const { status, formattedTime, startTimer, pauseTimer, resumeTimer, stopTimer } = useStudyTimer();
   const [aiStatus, setAiStatus] = useState<{ configured: boolean; provider: string }>({
@@ -39,8 +44,17 @@ export const Navbar: React.FC = () => {
 
   return (
     <header className="sticky top-0 z-30 flex h-16 w-full items-center justify-between border-b border-slate-200 bg-white/95 px-4 backdrop-blur sm:px-6 lg:px-8">
-      {/* Left: Active Course Selector */}
-      <div className="flex items-center gap-4">
+      {/* Left: Mobile Menu Toggle & Active Course Selector */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onToggleMobileMenu}
+          className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden"
+          title="Toggle Navigation Menu"
+          aria-label="Toggle menu"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+
         <div className="flex items-center gap-2">
           <BookOpen className="h-5 w-5 text-indigo-600" />
           <span className="hidden text-xs font-semibold uppercase tracking-wider text-slate-500 sm:inline">

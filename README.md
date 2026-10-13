@@ -155,6 +155,81 @@ Follow these steps for a live judge demonstration:
 
 * **Safe File Storage**: Unique filenames with directory traversal prevention (`path.basename` sanitation).
 * **SQL Injection Defense**: Prepared statements with SQLite parameter binding across all endpoints.
-* **Secret Isolation**: Zero API keys or secrets exposed to browser bundles.
-* **CORS & Size Limits**: Strict origin restriction and 50 MB upload caps.
-* **Untrusted Document Handling**: Document text is isolated and treated as passive data.
+* **Secret Isolation**: Zero API keys or secrets exposed to browser bundles. Client bundle audit confirms zero token leaks.
+* **CORS & Size Limits**: Strict origin restriction and 50 MB upload caps with Zod runtime request validation.
+* **Untrusted Document Handling**: Document text is isolated, chunked, and treated strictly as passive context data.
+
+---
+
+## 🏛️ Cognitive Learning Twin & Misconception Detective: Integrated Architecture
+
+Unlike simple chatbot wrappers, AI StudyMate models student cognition as a closed-loop system:
+
+```
+    [ Multimodal Ingestion ] (PDF, PPTX, VTT/SRT)
+               │
+               ▼
+    [ Source-Cited Knowledge Base ] (Preserved Page / Slide / Timestamp Coordinates)
+               │
+               ▼
+    [ Adaptive Quiz Engine ] ──(Student takes diagnostic assessment)──┐
+               │                                                      │
+        (Correct Answer)                                       (Incorrect Answer)
+               │                                                      │
+               ▼                                                      ▼
+    [ topic_performance Upgraded ]                           [ Misconception Detective ]
+               │                                                      │
+               │                                             Flag Conceptual Fallacy
+               │                                             Isolate Course Evidence
+               │                                             Serve Targeted Follow-up
+               │                                                      │
+               │                                          (Follow-up Verified Correct)
+               │                                                      │
+               ▼                                                      ▼
+    ┌────────────────────────────────────────────────────────────────────────┐
+    │                       Cognitive Learning Twin                          │
+    │  • Probabilistic Mastery Estimates (Bayesian Evidence Weighting)       │
+    │  • Sample-Size Diagnostic Confidence Intervals                         │
+    │  • Dynamic Learning Velocity Calculation                               │
+    └────────────────────────────────────────────────────────────────────────┘
+               │
+               ├──────────────────────────────────────────┐
+               ▼                                          ▼
+    [ Personalized Study Plan ]                 [ What-If Learning Simulator ]
+    • Prioritized weak-topic action items       • Forecast prospective readiness
+    • Linked directly to cited sources          • Test hypothetical study routines
+```
+
+---
+
+## ⚠️ Transparent Disclosures & Limitations for Hackathon Evaluators
+
+1. **AI Mode Disclosure**:
+   * **Active Default**: Operates out of the box in **Deterministic Extractive Fallback Mode** (BM25 retrieval + template extraction). It does *not* require external internet access or API credits, ensuring 100% reliable hackathon judging without unexpected rate-limit failures.
+   * **External LLM Mode**: When an API key is added to `.env` (`GEMINI_API_KEY` or `OPENAI_API_KEY`), the platform automatically upgrades to generative conversational responses while enforcing verbatim citation boundaries.
+2. **Estimates Labeled as Estimates**:
+   * What-If Simulator results and cognitive twin projections are mathematical estimates derived from learning curve models and spaced repetition parameters. They are clearly labeled as estimates in the user interface.
+3. **Audio/Video Ingestion**:
+   * Full video files (.mp4, .webm) are matched with their corresponding WebVTT / SRT transcript cues for precision timestamping. Direct on-device speech-to-text uses the pluggable STT adapter.
+
+---
+
+## 💻 Windows PowerShell Quick-Start Cheatsheet
+
+```powershell
+# 1. Open PowerShell in project directory:
+cd "C:\Users\jyothi B\OneDrive\Desktop\PT and AL"
+
+# 2. Run both servers simultaneously:
+npm run dev
+
+# 3. Alternatively, run in separate terminals:
+# Terminal 1: Backend Server (Port 5000)
+npm run dev:server
+
+# Terminal 2: Frontend Client (Port 5173)
+npm run dev:client
+
+# 4. Run automated test suite:
+npm test
+```
