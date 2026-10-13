@@ -208,7 +208,11 @@ export async function generateTutorResponse(
     limit: 4,
   });
 
-  const citations: Citation[] = retrieved.map(r => r.citation);
+  // Relevance check: ensure retrieved chunks have genuine keyword grounding
+  // Queries unrelated to uploaded materials (e.g., diffusion models in Java CS101) score < 0.15
+  const isGrounded = retrieved.length > 0 && retrieved[0].score >= 0.18;
+  const activeChunks = isGrounded ? retrieved : [];
+  const citations: Citation[] = activeChunks.map(r => r.citation);
 
   // 2. Check for configured AI provider
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -219,11 +223,13 @@ export async function generateTutorResponse(
   if (configuredProvider === 'gemini' && geminiKey && geminiKey.trim().length > 5) {
     try {
       const systemInstruction = getSystemPrompt(mode);
-      const contextText = retrieved
-        .map((r, i) => `[Source ${i + 1}: ${r.citation.material_title} | ${r.citation.unit_label}]\n${r.content}`)
-        .join('\n\n---\n\n');
+      const contextText = activeChunks.length > 0
+        ? activeChunks
+            .map((r, i) => `[Source ${i + 1}: ${r.citation.material_title} | ${r.citation.unit_label}]\n${r.content}`)
+            .join('\n\n---\n\n')
+        : 'NO RELEVANT COURSE MATERIAL FOUND FOR THIS QUESTION.';
 
-      const userPrompt = `Context Materials:\n${contextText}\n\nStudent Question: ${question}\n\nPlease provide a grounded answer adhering strictly to the sources above.`;
+      const userPrompt = `Context Materials:\n${contextText}\n\nStudent Question: ${question}\n\nPlease provide a grounded answer adhering strictly to the sources above. If context materials do not contain sufficient evidence, state clearly that the uploaded materials do not contain sufficient evidence.`;
       const llmAnswer = await callGemini(systemInstruction, userPrompt, geminiKey);
 
       return {
@@ -238,11 +244,13 @@ export async function generateTutorResponse(
   } else if (configuredProvider === 'openai' && openAiKey && openAiKey.trim().length > 5) {
     try {
       const systemInstruction = getSystemPrompt(mode);
-      const contextText = retrieved
-        .map((r, i) => `[Source ${i + 1}: ${r.citation.material_title} | ${r.citation.unit_label}]\n${r.content}`)
-        .join('\n\n---\n\n');
+      const contextText = activeChunks.length > 0
+        ? activeChunks
+            .map((r, i) => `[Source ${i + 1}: ${r.citation.material_title} | ${r.citation.unit_label}]\n${r.content}`)
+            .join('\n\n---\n\n')
+        : 'NO RELEVANT COURSE MATERIAL FOUND FOR THIS QUESTION.';
 
-      const userPrompt = `Context Materials:\n${contextText}\n\nStudent Question: ${question}\n\nPlease provide a grounded answer adhering strictly to the sources above.`;
+      const userPrompt = `Context Materials:\n${contextText}\n\nStudent Question: ${question}\n\nPlease provide a grounded answer adhering strictly to the sources above. If context materials do not contain sufficient evidence, state clearly that the uploaded materials do not contain sufficient evidence.`;
       const llmAnswer = await callOpenAI(systemInstruction, userPrompt, openAiKey);
 
       return {
@@ -257,7 +265,7 @@ export async function generateTutorResponse(
   }
 
   // 3. Reliable Fallback Extractive Mode
-  const fallbackAnswer = generateExtractiveFallback(question, retrieved, mode);
+  const fallbackAnswer = generateExtractiveFallback(question, activeChunks, mode);
   return {
     answer: fallbackAnswer,
     citations,

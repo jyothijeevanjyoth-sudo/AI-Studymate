@@ -198,8 +198,9 @@ export async function retrieveRelevantChunks(
   });
 
   // Filter and sort by score descending
+  const threshold = options.minScore !== undefined ? options.minScore : 0.1;
   const filtered = scored
-    .filter(item => item.score > 0.1)
+    .filter(item => item.score > threshold)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 

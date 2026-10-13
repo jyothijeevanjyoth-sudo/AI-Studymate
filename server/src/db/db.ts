@@ -6,8 +6,21 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Ensure data directory exists
-const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/studymate.sqlite');
+// Robust SQLite database path resolution across dev (src) and production (dist)
+function resolveDefaultDbPath(): string {
+  const candidates = [
+    path.resolve(process.cwd(), 'data/studymate.sqlite'),
+    path.resolve(process.cwd(), 'server/data/studymate.sqlite'),
+    path.resolve(__dirname, '../../data/studymate.sqlite'),
+    path.resolve(__dirname, '../../../../data/studymate.sqlite'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.resolve(process.cwd(), 'data/studymate.sqlite');
+}
+
+const dbPath = process.env.DATABASE_PATH || resolveDefaultDbPath();
 const dataDir = path.dirname(dbPath);
 
 if (!fs.existsSync(dataDir)) {
@@ -21,7 +34,13 @@ db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 
 export function initDatabase(): void {
-  const schemaPath = path.join(__dirname, 'schema.sql');
+  const schemaCandidates = [
+    path.join(__dirname, 'schema.sql'),
+    path.resolve(__dirname, '../../../src/db/schema.sql'),
+    path.resolve(process.cwd(), 'server/src/db/schema.sql'),
+    path.resolve(process.cwd(), 'src/db/schema.sql'),
+  ];
+  const schemaPath = schemaCandidates.find(p => fs.existsSync(p)) || schemaCandidates[0];
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
   db.exec(schemaSql);
   console.log('[DB] SQLite database initialized at:', dbPath);
