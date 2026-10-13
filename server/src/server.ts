@@ -94,6 +94,9 @@ app.use('/api/*', (req: Request, res: Response) => {
 
 // Centralized error handling
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  if (err.name === 'MulterError' || err.message?.includes('Unsupported file type') || err.message?.includes('File too large')) {
+    return res.status(400).json({ error: err.message });
+  }
   console.error('[Unhandled Server Error]', err);
   const status = err.status || 500;
   res.status(status).json({

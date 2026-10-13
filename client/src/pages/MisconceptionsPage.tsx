@@ -186,9 +186,14 @@ export const MisconceptionsPage: React.FC = () => {
 
                 {/* Detected Misconception Statement */}
                 <div className="mt-4">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-rose-600 mb-1">
-                    Identified Misconception:
-                  </h3>
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-rose-600">
+                      Likely Misconception (Diagnostic Hypothesis):
+                    </h3>
+                    <span className="text-[10px] text-slate-400 font-medium hidden sm:inline">
+                      Probabilistic diagnosis based on error pattern
+                    </span>
+                  </div>
                   <p className="text-sm font-semibold text-slate-900 bg-rose-50/60 p-3 rounded-xl border border-rose-200/60 leading-relaxed">
                     "{m.misconception_text}"
                   </p>

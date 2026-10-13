@@ -175,4 +175,39 @@ describe('AI StudyMate API Integration & Assessment Tests', () => {
     expect(statsRes.status).toBe(200);
     expect(statsRes.body.total_minutes).toBeGreaterThan(0);
   });
+
+  it('GET /api/study-plan & PATCH /api/study-plan/activities/:id updates activity completion', async () => {
+    const planRes = await request(app).get('/api/study-plan?courseId=crs_cs101_java');
+    expect(planRes.status).toBe(200);
+    expect(planRes.body.activities).toBeDefined();
+    expect(planRes.body.activities.length).toBeGreaterThan(0);
+
+    const firstAct = planRes.body.activities[0];
+    const patchRes = await request(app)
+      .patch(`/api/study-plan/activities/${firstAct.id}`)
+      .send({ isCompleted: true });
+
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.message).toContain('Activity completion updated');
+  });
+
+  it('GET /api/settings and /api/settings/status return verified system readiness', async () => {
+    const s1 = await request(app).get('/api/settings');
+    expect(s1.status).toBe(200);
+    expect(s1.body.database_ready).toBe(true);
+
+    const s2 = await request(app).get('/api/settings/status');
+    expect(s2.status).toBe(200);
+    expect(s2.body.total_materials).toBeGreaterThan(0);
+  });
+
+  it('POST /api/materials/upload rejects unsupported file formats with HTTP 400', async () => {
+    const res = await request(app)
+      .post('/api/materials/upload')
+      .field('courseId', 'crs_cs101_java')
+      .attach('file', Buffer.from('malicious payload'), 'test_app.exe');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Unsupported file type');
+  });
 });
