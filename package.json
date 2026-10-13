@@ -1,0 +1,28 @@
+{
+  "name": "ai-studymate",
+  "version": "1.0.0",
+  "description": "AI StudyMate — Your Personal AI Learning Companion (Track D: Personalized Tutoring & Adaptive Learning)",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT\" -c \"blue.bold,green.bold\" \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm run build --prefix client && npm run build --prefix server",
+    "test": "npm run test --prefix server",
+    "seed": "npm run seed --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "keywords": [
+    "education",
+    "ai-tutor",
+    "adaptive-learning",
+    "rag",
+    "source-citations",
+    "multimodal-ai"
+  ],
+  "author": "AI StudyMate Team",
+  "license": "MIT"
+}
