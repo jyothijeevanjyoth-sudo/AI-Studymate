@@ -1,4 +1,5 @@
 import { initDatabase, execute, transaction } from './db.js';
+import { indexBisModule } from '../scripts/index_bis.js';
 
 export async function seedDatabase(): Promise<{ status: string; courses: number; materials: number; chunks: number }> {
   initDatabase();
@@ -40,8 +41,8 @@ export async function seedDatabase(): Promise<{ status: string; courses: number;
       [mat3Id, courseId]
     );
 
-    // 3. Clear existing chunks for clean seeding
-    execute(`DELETE FROM document_chunks WHERE course_id = ?`, [courseId]);
+    // 3. Clear existing demo chunks for clean seeding
+    execute(`DELETE FROM document_chunks WHERE material_id IN (?, ?, ?)`, [mat1Id, mat2Id, mat3Id]);
 
     // Insert Textbook PDF Chunks (Pages 1 - 4)
     execute(
@@ -252,6 +253,9 @@ export async function seedDatabase(): Promise<{ status: string; courses: number;
        )`
     );
   });
+
+  // Ensure any uploaded modules (e.g. BIS701 Module 2) are indexed
+  await indexBisModule();
 
   return {
     status: 'success',

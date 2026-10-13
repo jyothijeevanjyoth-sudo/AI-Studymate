@@ -45,16 +45,28 @@ function tokenize(text: string): string[] {
 }
 
 /**
- * Extract a high-relevance snippet from the chunk matching query keywords
+ * Extract a high-relevance snippet from the chunk matching query keywords or key phrase
  */
-function extractSnippet(content: string, queryTokens: string[], maxLength = 260): string {
+function extractSnippet(content: string, queryTokens: string[], cleanedPhrase = '', maxLength = 260): string {
   const lower = content.toLowerCase();
+
+  // If the substantive phrase exists, center the snippet directly around it
+  if (cleanedPhrase.length > 3 && lower.includes(cleanedPhrase)) {
+    const phraseIdx = lower.indexOf(cleanedPhrase);
+    const start = Math.max(0, phraseIdx - 15);
+    const end = Math.min(content.length, start + maxLength);
+    let snip = content.slice(start, end).trim();
+    if (start > 0) snip = '...' + snip;
+    if (end < content.length) snip = snip + '...';
+    return snip;
+  }
+
   let bestIdx = -1;
   let maxHits = 0;
 
   // Find 150-char window with most keyword hits
   const windowSize = 150;
-  for (let i = 0; i < content.length; i += 60) {
+  for (let i = 0; i < content.length; i += 50) {
     const sub = lower.slice(i, i + windowSize);
     let hits = 0;
     for (const token of queryTokens) {
@@ -70,12 +82,41 @@ function extractSnippet(content: string, queryTokens: string[], maxLength = 260)
     return content.slice(0, maxLength) + (content.length > maxLength ? '...' : '');
   }
 
-  const start = Math.max(0, bestIdx - 30);
+  const start = Math.max(0, bestIdx - 20);
   const end = Math.min(content.length, start + maxLength);
   let snippet = content.slice(start, end).trim();
   if (start > 0) snippet = '...' + snippet;
   if (end < content.length) snippet = snippet + '...';
   return snippet;
+}
+
+export function cleanQueryPhrase(query: string): string {
+  return query
+    .toLowerCase()
+    .trim()
+    .replace(/^(?:can\s+you\s+)?(?:please\s+)?(?:explain|describe|define|discuss|clarify|detail)\s+(?:me\s+)?(?:about\s+)?/i, '')
+    .replace(/^(?:what\s+(?:is|are)|how\s+(?:does|do|to)|tell\s+me\s+about)\s+/i, '')
+    .trim();
+}
+
+/**
+ * Detect if a chunk is predominantly a course outline, syllabus, or table of contents
+ */
+export function isOutlineOrTOC(text: string): boolean {
+  const lower = text.toLowerCase();
+  if (/table of contents|syllabus|course outline|curriculum|module outline|module syllabus/i.test(lower)) {
+    return true;
+  }
+  // Detect comma-separated topic list sequences without instructional prose
+  const commaFragments = text.split(',').map(s => s.trim().split(/\s+/).length);
+  const shortFragmentCount = commaFragments.filter(len => len >= 1 && len <= 4).length;
+  if (shortFragmentCount >= 5 && (shortFragmentCount / commaFragments.length > 0.6)) {
+    return true;
+  }
+  if (/introduction to [^:]+:\s*([a-z\s]+,){3,}/i.test(lower)) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -125,6 +166,7 @@ export async function retrieveRelevantChunks(
 
   const queryTokens = tokenize(query);
   const lowerQuery = query.toLowerCase().trim();
+  const cleanedPhrase = cleanQueryPhrase(query);
 
   // If query is very short or generic, token match might be empty
   if (queryTokens.length === 0) {
@@ -167,9 +209,25 @@ export async function retrieveRelevantChunks(
     const topicLower = row.topic.toLowerCase();
     let score = 0;
 
-    // Exact phrase match bonus
+    // Full raw query exact match bonus
     if (lowerQuery.length > 4 && textLower.includes(lowerQuery)) {
       score += 5.0;
+    }
+
+    // Exact substantive topical phrase bonus (e.g. "processing data with hadoop")
+    if (cleanedPhrase.length > 4 && textLower.includes(cleanedPhrase)) {
+      score += 7.0;
+    }
+
+    // Sub-phrase n-gram match bonus (e.g. "processing data", "data with hadoop")
+    const subWords = cleanedPhrase.split(/\s+/).filter(w => w.length > 2 && !STOPWORDS.has(w));
+    if (subWords.length >= 2) {
+      for (let i = 0; i < subWords.length - 1; i++) {
+        const bigram = `${subWords[i]} ${subWords[i + 1]}`;
+        if (textLower.includes(bigram)) {
+          score += 2.0;
+        }
+      }
     }
 
     // Token frequency and BM25-like weighting
@@ -181,9 +239,19 @@ export async function retrieveRelevantChunks(
       if (termCount > 0) {
         // TF term saturation
         const tf = (termCount * 2.2) / (termCount + 1.2);
-        score += tf * (idf > 0 ? idf : 0.5);
+        score += tf * (idf > 0 ? idf : 1.2);
       }
       score += topicMatch;
+    }
+
+    // Bonus for definition, mechanism, and explanatory indicators
+    if (/\b(?:is an?|refers to|represents|occurs|defined as|helps (?:you|to)|designed for|framework|steps|workflow|executes)\b/i.test(textLower)) {
+      score += 1.2;
+    }
+
+    // Significant penalty for outline / table of contents / syllabus chunks
+    if (isOutlineOrTOC(row.content)) {
+      score *= 0.15;
     }
 
     // Small bonus if chunk belongs to a specified topic
@@ -220,7 +288,7 @@ export async function retrieveRelevantChunks(
         slide: chunk.slide_num || undefined,
         timestamp: chunk.timestamp_val || undefined,
         unit_label: chunk.unit_label,
-        snippet: extractSnippet(chunk.content, queryTokens),
+        snippet: extractSnippet(chunk.content, queryTokens, cleanedPhrase),
         relevance_score: normScore,
       },
     };
