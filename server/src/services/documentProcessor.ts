@@ -3,6 +3,7 @@ import path from 'node:path';
 import AdmZip from 'adm-zip';
 import pdfParse from 'pdf-parse';
 import { FileType } from '../../../shared/types.js';
+import { cleanSourceText } from './retrieval.js';
 
 export interface ExtractedUnit {
   unitIndex: number;
@@ -47,7 +48,7 @@ export async function processPdf(filePath: string, title: string): Promise<Extra
     for (const item of textContent.items) {
       text += item.str + ' ';
     }
-    const cleanText = text.trim();
+    const cleanText = cleanSourceText(text);
     const pageNum = pageData.pageIndex + 1;
     if (cleanText.length > 0) {
       units.push({

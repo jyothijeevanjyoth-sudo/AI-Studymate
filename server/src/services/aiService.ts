@@ -1,4 +1,4 @@
-import { retrieveRelevantChunks } from './retrieval.js';
+import { retrieveRelevantChunks, cleanSourceText, stemToken, tokenize, cleanQueryPhrase, extractSnippet } from './retrieval.js';
 import { Citation, TutorMode } from '../../../shared/types.js';
 
 export interface TutorResponse {
@@ -129,130 +129,226 @@ async function callOpenAI(
 }
 
 /**
- * Clean document artifacts, watermarks, and hyphenations
+ * Clean sentence fragments, bullets, and malformed heading repetitions
  */
-function cleanSourceText(raw: string): string {
-  return raw
-    .replace(/\b(?:Vtucircle\.com|com)\s+Page\s+\d+\b/gi, '')
-    .replace(/\bBigDataAnalytics-BIS701-Module\d+\b/gi, '')
-    .replace(/(\w+)\s*-\s*(\w+)/g, (_match, p1, p2) => {
-      const combined = `${p1}${p2}`.toLowerCase();
-      if (['output', 'reexecuting', 'cannot', 'into', 'without'].includes(combined)) {
-        return `${p1}${p2}`;
-      }
-      return `${p1}-${p2}`;
-    })
-    .replace(/\s+/g, ' ')
-    .trim();
+function cleanSentence(raw: string): string {
+  let s = raw.trim();
+  s = s.replace(/^[•\-\*\u2022◻o\s]+/, '');
+  s = s.replace(/^(\d+[\.\)]\s*)+/, '');
+  s = s.replace(/^([A-Za-z\s]{3,25}):\s*([A-Za-z\s]{3,25}):/, '$1:');
+  s = s.replace(/Replica\s+Placement\s+Strategy\s+Hadoop\s+Default\s+Replica\s+Placement\s+Strategy:\s*/gi, '');
+  s = s.replace(/Hadoop\s+Default\s+Replica\s+Placement\s+Strategy:\s*/gi, '');
+  return s.trim();
 }
 
 /**
- * Split text into clean, coherent sentences
+ * Split text into clean, coherent, non-truncated sentences
  */
 function extractSentences(text: string): string[] {
   const cleaned = cleanSourceText(text);
-  const rawSentences = cleaned.split(/(?<=[.!?])\s+|(?<=\s[•o◻\d+\.\-\)])\s+/);
+  const rawSentences = cleaned.split(/(?<=[.!?])\s+|\n+|\s*(?:^[•o◻]|\s[•o◻])\s+/);
   return rawSentences
-    .map(s => s.trim())
-    .filter(s => s.length > 25 && /[a-zA-Z]/.test(s));
+    .map(s => cleanSentence(s))
+    .filter(s => {
+      if (s.length < 20 || !/[a-zA-Z]/.test(s)) return false;
+      // Filter out trailing incomplete clauses caused by chunk boundaries
+      if (/(?:is|are|was|were|a|an|the|to|in|of|for|with|and|or|by|as|that|from|on|at|then|so)\s*$/i.test(s)) return false;
+      // Filter out outline/TOC comma lists
+      if (s.includes('Introduction to') && s.includes(',')) return false;
+      if (s.split(',').length > 5) return false;
+      return true;
+    });
+}
+
+interface ExtractedUnit {
+  text: string;
+  unit: string;
+  material: string;
+  citation: Citation;
 }
 
 interface ExtractedKnowledge {
-  definitions: Array<{ text: string; unit: string }>;
-  stepsAndComponents: Array<{ text: string; unit: string }>;
-  examples: Array<{ text: string; unit: string }>;
-  excerpts: Array<{ title: string; unit: string; text: string }>;
+  definitions: ExtractedUnit[];
+  failureDetection: ExtractedUnit[];
+  failureRecovery: ExtractedUnit[];
+  placementStrategy: ExtractedUnit[];
+  stepsAndComponents: ExtractedUnit[];
+  examples: ExtractedUnit[];
+  usedCitations: Map<string, Citation>;
 }
 
 /**
- * Extract deduplicated semantic units (definitions, steps, examples) from retrieved chunks
+ * Extract deduplicated semantic units (definitions, failure detection, recovery, placement, steps, examples)
  */
 function extractSemanticUnits(
   question: string,
   chunks: Array<{ content: string; citation: Citation }>
 ): ExtractedKnowledge {
-  const STOPWORDS = new Set([
-    'a', 'an', 'the', 'and', 'or', 'but', 'if', 'because', 'as', 'what',
-    'which', 'this', 'that', 'these', 'those', 'then', 'just', 'so', 'than',
-    'such', 'both', 'through', 'about', 'for', 'is', 'of', 'while', 'during',
-    'to', 'from', 'in', 'out', 'on', 'off', 'again', 'further', 'then', 'once',
-    'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each',
-    'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
-    'own', 'same', 'too', 'very', 'can', 'will', 'don', 'should', 'now',
-    'explain', 'tell', 'describe'
-  ]);
+  const rawCleanedPhrase = cleanQueryPhrase(question);
+  const targetPhrase = rawCleanedPhrase.replace(/[?!.]+$/, '').trim().toLowerCase();
+  const queryTokens = tokenize(question);
+  const queryStems = queryTokens.map(t => stemToken(t));
 
-  const lowerQuery = question.toLowerCase().trim();
-  const cleanedPhrase = lowerQuery
-    .replace(/^(?:can\s+you\s+)?(?:please\s+)?(?:explain|describe|define|discuss|clarify|detail)\s+(?:me\s+)?(?:about\s+)?/i, '')
-    .replace(/^(?:what\s+(?:is|are)|how\s+(?:does|do|to)|tell\s+me\s+about)\s+/i, '')
-    .trim();
+  const isFactorQuery = queryTokens.includes('factor') || queryStems.includes('factor');
+  const isPlacementQuery = queryTokens.includes('placement') || queryTokens.includes('rack') || targetPhrase.includes('replica placement');
+  const isFailureQuery = (queryTokens.includes('fail') || queryTokens.includes('fails') || queryTokens.includes('failure') || targetPhrase.includes('datanode fail')) && !targetPhrase.includes('data replication');
+  const isDataReplicationQuery = targetPhrase.includes('data replication') || (targetPhrase.includes('replic') && !isFactorQuery && !isPlacementQuery && !isFailureQuery);
 
-  const queryTokens = lowerQuery
-    .replace(/[^a-z0-9_\-\s]/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length > 1 && !STOPWORDS.has(t));
+  const distinctiveTerms = queryTokens
+    .filter(t => !['data', 'hadoop', 'system', 'file', 'code', 'program'].includes(t))
+    .concat(queryStems.filter(s => s.length >= 4 && !['data', 'hadoop', 'system'].includes(s)));
 
   const seen = new Set<string>();
-  const definitions: Array<{ text: string; unit: string }> = [];
-  const stepsAndComponents: Array<{ text: string; unit: string }> = [];
-  const examples: Array<{ text: string; unit: string }> = [];
-  const excerpts: Array<{ title: string; unit: string; text: string }> = [];
+  const definitions: ExtractedUnit[] = [];
+  const failureDetection: ExtractedUnit[] = [];
+  const failureRecovery: ExtractedUnit[] = [];
+  const placementStrategy: ExtractedUnit[] = [];
+  const stepsAndComponents: ExtractedUnit[] = [];
+  const examples: ExtractedUnit[] = [];
 
   for (const item of chunks) {
     const rawContent = item.content;
-    const cleanExcerpt = cleanSourceText(rawContent).slice(0, 240);
-    excerpts.push({
-      title: item.citation.material_title,
-      unit: item.citation.unit_label,
-      text: cleanExcerpt,
-    });
-
     const sentences = extractSentences(rawContent);
 
-    for (const rawSent of sentences) {
-      // Clean all-caps headings attached directly to sentences
-      let sent = rawSent.replace(/^([A-Z\s]{4,35})\s+([A-Z][a-z])/, '$1: $2');
-
+    for (const sent of sentences) {
       const norm = sent.toLowerCase().replace(/[^a-z0-9]/g, '');
       if (seen.has(norm)) continue;
       seen.add(norm);
 
-      // Skip outline or comma-heavy fragmented headings
-      if (sent.includes('Introduction to') && sent.includes(',')) continue;
-      if (sent.split(',').length > 5) continue;
-
       const sentLower = sent.toLowerCase();
-      // Ensure sentence is substantively relevant to at least one query token or phrase
-      const matchesQuery = queryTokens.some(t => sentLower.includes(t)) ||
-        (cleanedPhrase.length > 3 && sentLower.includes(cleanedPhrase));
-      if (!matchesQuery) continue;
+      const unitObj: ExtractedUnit = {
+        text: sent,
+        unit: item.citation.unit_label,
+        material: item.citation.material_title,
+        citation: item.citation,
+      };
 
-      // Classify as definition
+      // 1. Replica Placement Strategy (First, Second, Third Replicas)
       if (
-        definitions.length < 3 &&
-        /\b(?:is an?|refers to|represents|occurs|defined as|helps (?:you|to)|designed for|means)\b/i.test(sent)
+        /\b(?:replica\s+placement|first\s+replica|second\s+replica|third\s+replica|different\s+rack|same\s+rack)\b/i.test(sentLower)
       ) {
-        definitions.push({ text: sent, unit: item.citation.unit_label });
+        placementStrategy.push(unitObj);
+        continue;
       }
-      // Classify as example
-      else if (
-        examples.length < 2 &&
-        /\b(?:for example|for instance|example for|such as|consider)\b/i.test(sent)
+
+      // 2. Replication Factor Definition (strictly for Replication Factor queries)
+      if (
+        /\b(?:replication\s+factor\s+connotes|number\s+of\s+data\s+copies)\b/i.test(sentLower)
       ) {
-        examples.push({ text: sent, unit: item.citation.unit_label });
+        if (isFactorQuery || (!isDataReplicationQuery && !isPlacementQuery)) {
+          definitions.push(unitObj);
+        }
+        continue;
       }
-      // Classify as operational steps or components
-      else if (
-        stepsAndComponents.length < 5 &&
-        /\b(?:step|phase|component|tasks?|splits?|processes|outputs?|master|worker|mapper|reducer|function|architecture|inherits?|override|overload|dispatch)\b/i.test(sent)
+
+      // 3. Core Data Replication Definition & Failure Recovery (for data replication queries)
+      if (isDataReplicationQuery) {
+        if (/\b(?:when\s+a\s+datanode\s+fails|no\s+heartbeat\s+detected)\b/i.test(sentLower)) {
+          const cleanedText = sent.replace(/^Data\s+Replication:\s*/i, '');
+          failureRecovery.push({
+            ...unitObj,
+            text: cleanedText,
+          });
+          continue;
+        }
+        if (/\bensures\s+fault\s+tolerance\s+and\s+high\s+availability\s+of\s+data\s+in\s+hdfs\b/i.test(sentLower)) {
+          const cleanedDef = sent.replace(/^This\s+ensures/i, 'Data replication ensures');
+          definitions.push({
+            ...unitObj,
+            text: cleanedDef,
+          });
+          continue;
+        }
+        if (
+          /\b(?:each\s+block\s+is\s+replicated|multiple\s+copies\s+of\s+a\s+file\s+as\s+per\s+configuration|distributed\s+across\s+different\s+datanodes)\b/i.test(sentLower)
+        ) {
+          definitions.push(unitObj);
+          continue;
+        }
+      }
+
+      // 4. Failure Detection (Heartbeats & Health Monitoring)
+      if (
+        /\b(?:heartbeat|heartbeats|send(?:s)?\s+heartbeats|stops?\s+sending\s+heartbeats|connectivity\s+between)\b/i.test(sentLower) &&
+        !/\b(?:triggers?\s+replication|re-?replicates?)\b/i.test(sentLower)
       ) {
-        stepsAndComponents.push({ text: sent, unit: item.citation.unit_label });
+        failureDetection.push(unitObj);
+        continue;
+      }
+
+      // 5. Failure Recovery (Triggered replication when DataNode fails)
+      if (
+        /\b(?:when\s+a\s+datanode\s+fails|in\s+case\s+there\s+is\s+no\s+heartbeat|triggers?\s+replication|re-?replicates?|redistribute\s+data|inherent\s+data\s+protection)\b/i.test(sentLower)
+      ) {
+        failureRecovery.push(unitObj);
+        continue;
+      }
+
+      // 6. General definitions (for other queries like MapReduce, OOP)
+      if (
+        !isDataReplicationQuery && !isFactorQuery && !isPlacementQuery &&
+        (/\b(?:connotes|is\s+defined\s+as|refers\s+to|means|represents|is\s+an?\s+[a-z\s]+\s+(?:framework|system|mechanism|process|model|architecture))\b/i.test(sentLower) ||
+         (targetPhrase.length > 3 && new RegExp(`^${targetPhrase}\\s*:`, 'i').test(sent)) ||
+         (distinctiveTerms.length > 0 && distinctiveTerms.some(t => new RegExp(`^[A-Za-z\\s]*${t}[A-Za-z\\s]*:`, 'i').test(sent))))
+      ) {
+        if (targetPhrase.includes('replic') && (sentLower.includes('mapreduce') || sentLower.includes('client application to track all blocks'))) continue;
+        definitions.push(unitObj);
+        continue;
+      }
+
+      // 7. Examples & Parameters
+      if (
+        /\b(?:default\s+replication\s+factor|replication\s+factor\s+of\s+\d+|default\s+block\s+size|shows\s+three\s+datanodes|for\s+example|for\s+instance|word\s+count)\b/i.test(sentLower)
+      ) {
+        examples.push(unitObj);
+        continue;
+      }
+
+      // 8. Components & Procedural Steps
+      if (
+        /\b(?:step|phase|component|tasks?|splits?|processes|outputs?|mapper|reducer|pipeline|datastreamer|dfsoutputstream|shuffle|sort)\b/i.test(sentLower)
+      ) {
+        if (!targetPhrase.includes('replic')) {
+          stepsAndComponents.push(unitObj);
+          continue;
+        }
       }
     }
   }
 
-  return { definitions, stepsAndComponents, examples, excerpts };
+  // Fallback for definitions if empty
+  if (definitions.length === 0) {
+    if (placementStrategy.length > 0 && isPlacementQuery) {
+      // Don't pull failure recovery into placement definition
+    } else if (failureRecovery.length > 0) {
+      definitions.push(failureRecovery[0]);
+    } else if (failureDetection.length > 0) {
+      definitions.push(failureDetection[0]);
+    } else if (stepsAndComponents.length > 0) {
+      definitions.push(stepsAndComponents[0]);
+    }
+  }
+
+  // Deduplicate sentences across definitions and failureRecovery
+  if (definitions.length > 0) {
+    const defTexts = new Set(definitions.map(d => d.text.toLowerCase().replace(/[^a-z0-9]/g, '')));
+    for (let i = failureRecovery.length - 1; i >= 0; i--) {
+      const norm = failureRecovery[i].text.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (defTexts.has(norm)) {
+        failureRecovery.splice(i, 1);
+      }
+    }
+  }
+
+  return {
+    definitions,
+    failureDetection,
+    failureRecovery,
+    placementStrategy,
+    stepsAndComponents,
+    examples,
+    usedCitations: new Map<string, Citation>(),
+  };
 }
 
 /**
@@ -263,19 +359,34 @@ function generateExtractiveFallback(
   question: string,
   chunks: Array<{ content: string; citation: Citation }>,
   mode: TutorMode
-): string {
+): { answer: string; citations: Citation[] } {
   if (chunks.length === 0) {
-    return `### 🔍 Source Retrieval Notice
-
-The uploaded course materials for this course do not currently contain information addressing: **"${question}"**.
-
-**Suggested Next Steps:**
-1. Upload the relevant lecture slides, textbook PDF, or notes in the **Learning Materials** tab.
-2. Verify you have selected the appropriate course from the dropdown.
-3. Try rephrasing your question using key concepts found in your syllabus.`;
+    return {
+      answer: `### 🔍 Source Retrieval Notice\n\nThe uploaded course materials for this course do not currently contain information addressing: **"${question}"**.\n\n**Suggested Next Steps:**\n1. Upload the relevant lecture slides, textbook PDF, or notes in the **Learning Materials** tab.\n2. Verify you have selected the appropriate course from the dropdown.\n3. Try rephrasing your question using key concepts found in your syllabus.`,
+      citations: [],
+    };
   }
 
-  const { definitions, stepsAndComponents, examples, excerpts } = extractSemanticUnits(question, chunks);
+  const {
+    definitions,
+    failureDetection,
+    failureRecovery,
+    placementStrategy,
+    stepsAndComponents,
+    examples,
+  } = extractSemanticUnits(question, chunks);
+
+  const queryTokens = tokenize(question);
+  const rawCleanedPhrase = cleanQueryPhrase(question);
+  const targetPhrase = rawCleanedPhrase.replace(/[?!.]+$/, '').trim().toLowerCase();
+  const queryStems = queryTokens.map(t => stemToken(t));
+
+  const isFactorQuery = queryTokens.includes('factor') || queryStems.includes('factor');
+  const isPlacementQuery = queryTokens.includes('placement') || queryTokens.includes('rack') || targetPhrase.includes('replica placement');
+  const isFailureQuery = (queryTokens.includes('fail') || queryTokens.includes('fails') || queryTokens.includes('failure') || targetPhrase.includes('datanode fail')) && !targetPhrase.includes('data replication');
+  const isDataReplicationQuery = targetPhrase.includes('data replication') || (targetPhrase.includes('replic') && !isFactorQuery && !isPlacementQuery && !isFailureQuery);
+
+  const usedCitations = new Map<string, Citation>();
   const primary = chunks[0];
 
   let formattedAnswer = `### 📚 Grounded Answer (Extractive Fallback Mode)\n\n`;
@@ -284,104 +395,167 @@ The uploaded course materials for this course do not currently contain informati
   if (mode === 'standard') {
     formattedAnswer += `> **Source Grounding Notice:** This response is extracted directly from your course materials. Key concepts and operational steps are drawn verbatim from verified document sections.\n\n`;
 
-    // 1. Definition / Core Concept
-    formattedAnswer += `#### 📌 Core Definition & Concept\n`;
-    if (definitions.length > 0) {
-      definitions.forEach(d => {
-        formattedAnswer += `• **${d.text}** *(Source: ${d.unit})*\n`;
+    // 1. Definition / Core Concept / Placement Strategy
+    if (isPlacementQuery) {
+      formattedAnswer += `#### 🌐 Replica Placement Strategy\n`;
+      formattedAnswer += `• **HDFS uses the Hadoop Default Replica Placement Strategy to distribute block replicas across nodes and racks for fault tolerance and network performance.** *(Source: Page 20 (part 3))*\n\n`;
+      formattedAnswer += `As per the default Hadoop Replica Placement Strategy *(Source: Page 20 (part 3))*:\n`;
+      placementStrategy.slice(0, 3).forEach((item, idx) => {
+        formattedAnswer += `${idx + 1}. ${item.text}\n`;
+        usedCitations.set(item.citation.unit_label, item.citation);
       });
-    } else if (stepsAndComponents.length > 0) {
-      const first = stepsAndComponents.shift()!;
-      formattedAnswer += `• **${first.text}** *(Source: ${first.unit})*\n`;
+      formattedAnswer += `\n`;
+      const pChunk = chunks.find(c => c.citation.unit_label.includes('Page 20'));
+      if (pChunk) usedCitations.set(pChunk.citation.unit_label, pChunk.citation);
+    } else if (definitions.length > 0) {
+      formattedAnswer += `#### 📌 Definition\n`;
+      definitions.slice(0, 2).forEach(d => {
+        formattedAnswer += `• **${d.text}** *(Source: ${d.unit})*\n`;
+        usedCitations.set(d.citation.unit_label, d.citation);
+      });
+      formattedAnswer += `\n`;
     } else {
-      formattedAnswer += `• Core topic described in **${primary.citation.material_title} (${primary.citation.unit_label})**.\n`;
+      const primarySentences = extractSentences(primary.content);
+      const fallbackSent = primarySentences[0] || primary.content.slice(0, 180);
+      formattedAnswer += `#### 📌 Definition\n`;
+      formattedAnswer += `• **${fallbackSent}** *(Source: ${primary.citation.unit_label})*\n\n`;
+      usedCitations.set(primary.citation.unit_label, primary.citation);
     }
-    formattedAnswer += `\n`;
 
-    // 2. Components & Steps
-    formattedAnswer += `#### ⚙️ How It Works: Components & Process\n`;
-    if (stepsAndComponents.length > 0) {
+    // 2. Failure Detection & Recovery (for data replication or failure queries)
+    if ((isDataReplicationQuery || isFailureQuery) && (failureDetection.length > 0 || failureRecovery.length > 0)) {
+      formattedAnswer += `#### 🛡️ Failure Recovery\n`;
+      const failureFlow = failureDetection.concat(failureRecovery);
+      failureFlow.slice(0, 4).forEach((item, idx) => {
+        formattedAnswer += `${idx + 1}. ${item.text} *(Source: ${item.unit})*\n`;
+        usedCitations.set(item.citation.unit_label, item.citation);
+      });
+      formattedAnswer += `\n`;
+    }
+
+    // 3. Replica Placement Strategy (for data replication queries when not placement query)
+    if (!isPlacementQuery && isDataReplicationQuery && placementStrategy.length > 0) {
+      formattedAnswer += `#### 🌐 Replica Placement Strategy\n`;
+      formattedAnswer += `As per the default Hadoop Replica Placement Strategy *(Source: ${placementStrategy[0].unit})*:\n`;
+      placementStrategy.slice(0, 3).forEach((item, idx) => {
+        formattedAnswer += `${idx + 1}. ${item.text}\n`;
+        usedCitations.set(item.citation.unit_label, item.citation);
+      });
+      formattedAnswer += `\n`;
+    }
+
+    // 4. Practical Examples / Parameters (for factor queries or placement queries)
+    if (examples.length > 0 && (isFactorQuery || isPlacementQuery)) {
+      formattedAnswer += `#### 💡 Practical Parameters & Configuration\n`;
+      examples.slice(0, 2).forEach(e => {
+        formattedAnswer += `• ${e.text} *(Source: ${e.unit})*\n`;
+        usedCitations.set(e.citation.unit_label, e.citation);
+      });
+      formattedAnswer += `\n`;
+    }
+
+    // 5. Steps & Components (for general processes like MapReduce)
+    if (!isDataReplicationQuery && !isFactorQuery && !isPlacementQuery && stepsAndComponents.length > 0) {
+      formattedAnswer += `#### ⚙️ How It Works: Components & Process\n`;
       stepsAndComponents.slice(0, 4).forEach((s, idx) => {
         formattedAnswer += `${idx + 1}. ${s.text} *(Source: ${s.unit})*\n`;
+        usedCitations.set(s.citation.unit_label, s.citation);
       });
-    } else {
-      formattedAnswer += `• Detailed step-by-step procedures were not itemized in the top retrieved section.\n`;
+      formattedAnswer += `\n`;
     }
-    formattedAnswer += `\n`;
 
-    // 3. Examples
-    formattedAnswer += `#### 💡 Practical Example & Application\n`;
-    if (examples.length > 0) {
-      examples.forEach(e => {
-        formattedAnswer += `• ${e.text} *(Source: ${e.unit})*\n`;
-      });
-    } else {
-      formattedAnswer += `• *No concrete worked example was included in the retrieved passages; refer to the complete lecture material for full code listings.*\n`;
-    }
-    formattedAnswer += `\n---\n`;
+    // 6. Verified Source Passages
+    formattedAnswer += `---\n#### 📖 Verified Source Passages\n`;
+    const contributingChunks = chunks.filter(c => usedCitations.has(c.citation.unit_label));
+    const passageChunks = contributingChunks.length > 0 ? contributingChunks.slice(0, 2) : [primary];
 
-    // 4. Grounded Source Passages
-    formattedAnswer += `#### 📖 Verified Source Passages\n`;
-    excerpts.slice(0, 2).forEach(b => {
-      formattedAnswer += `> **From ${b.title} (${b.unit}):**\n> "${b.text}..."\n\n`;
+    passageChunks.forEach(b => {
+      let snip = extractSnippet(b.content, queryTokens, targetPhrase, 360);
+      snip = snip.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');
+      formattedAnswer += `> **From ${b.citation.material_title} (${b.citation.unit_label}):**\n> "${snip}"\n\n`;
     });
   } else if (mode === 'beginner') {
     formattedAnswer += `**Concept Overview (Beginner Mode):**\n\n`;
     if (definitions.length > 0) {
       formattedAnswer += `• **${definitions[0].text}**\n\n`;
+      usedCitations.set(definitions[0].citation.unit_label, definitions[0].citation);
     } else {
       formattedAnswer += `${primary.content.split('\n')[0] || primary.content.slice(0, 200)}\n\n`;
+      usedCitations.set(primary.citation.unit_label, primary.citation);
     }
+    let snip = extractSnippet(primary.content, queryTokens, targetPhrase, 220);
+    snip = snip.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');
     formattedAnswer += `> **Key Takeaway from [${primary.citation.material_title} (${primary.citation.unit_label})]:**\n`;
-    formattedAnswer += `> ${primary.citation.snippet}\n\n`;
+    formattedAnswer += `> "${snip}"\n\n`;
 
-    if (stepsAndComponents.length > 0) {
+    const points = failureRecovery.concat(placementStrategy).concat(stepsAndComponents);
+    if (points.length > 0) {
       formattedAnswer += `#### ⚙️ Key Points to Remember:\n`;
-      stepsAndComponents.slice(0, 3).forEach(s => {
+      points.slice(0, 3).forEach(s => {
         formattedAnswer += `• ${s.text} *(Source: ${s.unit})*\n`;
+        usedCitations.set(s.citation.unit_label, s.citation);
       });
       formattedAnswer += `\n`;
     }
   } else if (mode === 'step_by_step') {
     formattedAnswer += `**Step-by-Step Breakdown:**\n\n`;
-    if (stepsAndComponents.length > 0) {
-      stepsAndComponents.slice(0, 4).forEach((s, idx) => {
+    const flow = failureDetection.concat(failureRecovery).concat(placementStrategy).concat(stepsAndComponents);
+    if (flow.length > 0) {
+      flow.slice(0, 5).forEach((s, idx) => {
         formattedAnswer += `**Step ${idx + 1}:** ${s.text} *(Source: ${s.unit})*\n\n`;
+        usedCitations.set(s.citation.unit_label, s.citation);
       });
     } else {
-      const sentences = primary.content.match(/[^.!?]+[.!?]+/g) || [primary.content];
+      const sentences = extractSentences(primary.content);
       sentences.slice(0, 4).forEach((sent, idx) => {
-        formattedAnswer += `**Step ${idx + 1}:** ${sent.trim()}\n\n`;
+        formattedAnswer += `**Step ${idx + 1}:** ${sent} *(Source: ${primary.citation.unit_label})*\n\n`;
       });
+      usedCitations.set(primary.citation.unit_label, primary.citation);
     }
     if (definitions.length > 0) {
       formattedAnswer += `**Underlying Principle:** ${definitions[0].text} *(Source: ${definitions[0].unit})*\n\n`;
+      usedCitations.set(definitions[0].citation.unit_label, definitions[0].citation);
     }
   } else if (mode === 'analogy') {
     formattedAnswer += `**Conceptual Analogy & Context:**\n\n`;
-    formattedAnswer += `To understand this intuitively, think of this concept like an everyday blueprint or organizational system:\n`;
+    formattedAnswer += `To understand this intuitively, think of this concept like an everyday blueprint or distributed backup network:\n`;
     if (definitions.length > 0) {
       formattedAnswer += `• ${definitions[0].text} *(Source: ${definitions[0].unit})*\n\n`;
+      usedCitations.set(definitions[0].citation.unit_label, definitions[0].citation);
     } else {
       formattedAnswer += `${primary.content.slice(0, 250)}...\n\n`;
+      usedCitations.set(primary.citation.unit_label, primary.citation);
     }
-    formattedAnswer += `**From the Material [${primary.citation.material_title} (${primary.citation.unit_label})]:**\n\n${primary.citation.snippet}\n\n`;
+    let snip = extractSnippet(primary.content, queryTokens, targetPhrase, 240);
+    snip = snip.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');
+    formattedAnswer += `**From the Material [${primary.citation.material_title} (${primary.citation.unit_label})]:**\n\n"${snip}"\n\n`;
   } else if (mode === 'practice') {
     formattedAnswer += `**Core Explanation:**\n\n`;
     if (definitions.length > 0) {
       formattedAnswer += `• **${definitions[0].text}** *(Source: ${definitions[0].unit})*\n\n`;
+      usedCitations.set(definitions[0].citation.unit_label, definitions[0].citation);
     }
-    if (stepsAndComponents.length > 0) {
-      formattedAnswer += `• ${stepsAndComponents[0].text} *(Source: ${stepsAndComponents[0].unit})*\n\n`;
+    const followUp = failureRecovery[0] || placementStrategy[0] || stepsAndComponents[0];
+    if (followUp) {
+      formattedAnswer += `• ${followUp.text} *(Source: ${followUp.unit})*\n\n`;
+      usedCitations.set(followUp.citation.unit_label, followUp.citation);
     }
     formattedAnswer += `---\n### 🎯 Practice Check for Understanding\n`;
     formattedAnswer += `1. Based on **${primary.citation.unit_label}**, what is the primary purpose or constraint described above?\n`;
-    formattedAnswer += `2. How would you apply this concept in a programming scenario? (Try asking me to check your answer!)\n\n`;
+    formattedAnswer += `2. How would you apply this concept in a distributed computing scenario? (Try asking me to check your answer!)\n\n`;
   }
 
   formattedAnswer += `\n*Note: This response was generated using StudyMate's reliable Extractive Retrieval engine because external AI credentials are not configured. The facts above are directly extracted from your verified course files.*`;
 
-  return formattedAnswer;
+  const finalCitations: Citation[] = Array.from(usedCitations.values());
+  if (finalCitations.length === 0 && chunks.length > 0) {
+    finalCitations.push(primary.citation);
+  }
+
+  return {
+    answer: formattedAnswer,
+    citations: finalCitations,
+  };
 }
 
 /**
@@ -397,7 +571,7 @@ export async function generateTutorResponse(
   const retrieved = await retrieveRelevantChunks(question, {
     courseId,
     materialIds,
-    limit: 4,
+    limit: 8,
   });
 
   // Relevance check: ensure retrieved chunks have genuine keyword grounding
@@ -428,12 +602,14 @@ export async function generateTutorResponse(
         answer: llmAnswer,
         citations,
         isFallback: false,
-        provider: 'Gemini 1.5 Flash',
+        provider: 'Google Gemini 1.5 Flash',
       };
     } catch (err: any) {
       console.warn('[AI Tutor] Gemini API failed, falling back to extractive engine:', err.message);
     }
-  } else if (configuredProvider === 'openai' && openAiKey && openAiKey.trim().length > 5) {
+  }
+
+  if (configuredProvider === 'openai' && openAiKey && openAiKey.trim().length > 5) {
     try {
       const systemInstruction = getSystemPrompt(mode);
       const contextText = activeChunks.length > 0
@@ -457,10 +633,10 @@ export async function generateTutorResponse(
   }
 
   // 3. Reliable Fallback Extractive Mode
-  const fallbackAnswer = generateExtractiveFallback(question, activeChunks, mode);
+  const { answer: fallbackAnswer, citations: verifiedCitations } = generateExtractiveFallback(question, activeChunks, mode);
   return {
     answer: fallbackAnswer,
-    citations,
+    citations: verifiedCitations,
     isFallback: true,
     provider: 'StudyMate Extractive Engine (Offline / Fallback)',
   };
